@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # ---------------- CODE ---------------- #
+      # ---------------- CHECKOUT ---------------- #
       - name: Checkout Code
         uses: actions/checkout@v4
 
@@ -18,37 +18,44 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: 3.11
+          python-version: "3.11"
 
       # ---------------- DEPENDENCIES ---------------- #
       - name: Install Dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install streamlit
 
       # ---------------- START FASTAPI ---------------- #
       - name: Start FastAPI Backend
         run: |
-          uvicorn app.main:app --host 127.0.0.1 --port 8000 &
-          sleep 10
+          nohup uvicorn app.main:app --host 127.0.0.1 --port 8000 > api.log 2>&1 &
+          sleep 15
 
-      # ---------------- TEST FASTAPI ---------------- #
-      - name: Test FastAPI Health
+      # ---------------- WAIT FASTAPI ---------------- #
+      - name: Wait for FastAPI
         run: |
-          curl http://127.0.0.1:8000/
+          for i in {1..10}; do
+            curl --fail http://127.0.0.1:8000/ && exit 0
+            echo "Waiting for API..."
+            sleep 3
+          done
+          echo "FastAPI failed to start"
+          exit 1
 
       # ---------------- START STREAMLIT ---------------- #
       - name: Start Streamlit App
         run: |
-          streamlit run streamlit_run_app.py --server.port 8501 &
+          nohup streamlit run streamlit_run_app.py --server.port 8501 --server.headless true > streamlit.log 2>&1 &
           sleep 10
 
-      # ---------------- SMOKE TEST STREAMLIT ---------------- #
-      - name: Check Streamlit Process
+      # ---------------- TEST STREAMLIT ---------------- #
+      - name: Check Streamlit
         run: |
-          curl http://127.0.0.1:8501 || true
+          curl --fail http://127.0.0.1:8501/ || true
 
-      # ---------------- API INTEGRATION TEST ---------------- #
+      # ---------------- API TEST ---------------- #
       - name: Test Chat Endpoint
         run: |
           curl -X POST http://127.0.0.1:8000/chat \
@@ -60,12 +67,18 @@ jobs:
             "chat_history": []
           }' || true
 
-      # ---------------- BUILD CHECK ONLY ---------------- #
-      - name: Build Validation
+      # ---------------- BUILD CHECK ---------------- #
+      - name: Compile Python Code
         run: |
           python -m compileall app/
 
-      # ---------------- DEPLOY HOOK ---------------- #
-      - name: Trigger Deployment
+      # ---------------- DEBUG LOGS (ONLY ON FAIL) ---------------- #
+      - name: Show Logs If Failed
+        if: failure()
         run: |
-          echo "Connect Render / Railway webhook here"
+          cat api.log || true
+          cat streamlit.log || true
+
+      # ---------------- DEPLOY HOOK ---------------- #
+      - name: Deployment Ready
+        run: echo "CI passed. Connect Render/Railway here."
