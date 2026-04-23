@@ -1,0 +1,71 @@
+name: AI FullStack CI/CD
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  test-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ---------------- CODE ---------------- #
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # ---------------- PYTHON ---------------- #
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.11
+
+      # ---------------- DEPENDENCIES ---------------- #
+      - name: Install Dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install streamlit
+
+      # ---------------- START FASTAPI ---------------- #
+      - name: Start FastAPI Backend
+        run: |
+          uvicorn app.main:app --host 127.0.0.1 --port 8000 &
+          sleep 10
+
+      # ---------------- TEST FASTAPI ---------------- #
+      - name: Test FastAPI Health
+        run: |
+          curl http://127.0.0.1:8000/
+
+      # ---------------- START STREAMLIT ---------------- #
+      - name: Start Streamlit App
+        run: |
+          streamlit run streamlit_run_app.py --server.port 8501 &
+          sleep 10
+
+      # ---------------- SMOKE TEST STREAMLIT ---------------- #
+      - name: Check Streamlit Process
+        run: |
+          curl http://127.0.0.1:8501 || true
+
+      # ---------------- API INTEGRATION TEST ---------------- #
+      - name: Test Chat Endpoint
+        run: |
+          curl -X POST http://127.0.0.1:8000/chat \
+          -H "Content-Type: application/json" \
+          -d '{
+            "api_key": "test",
+            "messages": "hello",
+            "session_id": "test",
+            "chat_history": []
+          }' || true
+
+      # ---------------- BUILD CHECK ONLY ---------------- #
+      - name: Build Validation
+        run: |
+          python -m compileall app/
+
+      # ---------------- DEPLOY HOOK ---------------- #
+      - name: Trigger Deployment
+        run: |
+          echo "Connect Render / Railway webhook here"

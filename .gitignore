@@ -1,0 +1,8 @@
+mlruns/
+*.db
+*.faiss
+*.pkl
+.env
+__pycache__/
+#Optional private json data
+*.json
