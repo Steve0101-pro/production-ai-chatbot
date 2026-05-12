@@ -33,6 +33,11 @@ jobs:
           nohup uvicorn app.main:app --host 127.0.0.1 --port 8000 > api.log 2>&1 &
           sleep 15
 
+      # ---------------- DEBUG FASTAPI ---------------- #
+      - name: Show FastAPI Startup Logs
+        run: |
+          cat api.log || true
+
       # ---------------- WAIT FASTAPI ---------------- #
       - name: Wait for FastAPI
         run: |
@@ -47,8 +52,15 @@ jobs:
       # ---------------- START STREAMLIT ---------------- #
       - name: Start Streamlit App
         run: |
-          nohup streamlit run streamlit_run_app.py --server.port 8501 --server.headless true > streamlit.log 2>&1 &
+          nohup streamlit run streamlit_run_app.py \
+          --server.port 8501 \
+          --server.headless true > streamlit.log 2>&1 &
           sleep 10
+
+      # ---------------- DEBUG STREAMLIT ---------------- #
+      - name: Show Streamlit Startup Logs
+        run: |
+          cat streamlit.log || true
 
       # ---------------- TEST STREAMLIT ---------------- #
       - name: Check Streamlit
@@ -72,13 +84,15 @@ jobs:
         run: |
           python -m compileall app/
 
-      # ---------------- DEBUG LOGS (ONLY ON FAIL) ---------------- #
+      # ---------------- FULL LOGS ON FAILURE ---------------- #
       - name: Show Logs If Failed
         if: failure()
         run: |
+          echo "===== FASTAPI LOG ====="
           cat api.log || true
+          echo "===== STREAMLIT LOG ====="
           cat streamlit.log || true
 
       # ---------------- DEPLOY HOOK ---------------- #
       - name: Deployment Ready
-        run: echo "CI passed. Connect Render/Railway here."
+        run: echo "CI passed. Connect Render / Railway here."
