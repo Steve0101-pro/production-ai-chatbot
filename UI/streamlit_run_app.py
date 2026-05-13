@@ -2,14 +2,18 @@
 import streamlit as st
 import requests
 import uuid
-from app.services.embeddings import get_embed
 import os
 
 
+import sys
+from pathlib import Path
 
+ROOT_DIR = Path(__file__).resolve().parent.parent
+sys.path.append(str(ROOT_DIR))
 
 # Import memory functions
 from app.services.memory import load_memory, save_memory, search_memory
+from app.services.embeddings import get_embed
 
 API_URL = os.getenv("API_URL", "http://127.0.0.1:8000/chat")
 

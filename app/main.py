@@ -16,23 +16,30 @@ from app.utils.logger import logger
 
 
 # ==================================================
-# SAFE OPTIONAL MLFLOW IMPORT
+# SAFE OPTIONAL MLFLOW IMPORT (PRODUCTION SAFE)
 # ==================================================
-MLFLOW_ENABLED = True
 
-try:
-    import mlflow
+MLFLOW_ENABLED = os.getenv("MLFLOW_ENABLED", "false").lower() == "true"
 
-    MLFLOW_URI = os.getenv("MLFLOW_URI", "http://127.0.0.1:5000")
-    MLFLOW_EXPERIMENT = os.getenv("MLFLOW_EXPERIMENT", "fastapi_llm_chatbot")
+mlflow = None
 
-    mlflow.set_tracking_uri(MLFLOW_URI)
-    mlflow.set_experiment(MLFLOW_EXPERIMENT)
+if MLFLOW_ENABLED:
+    try:
+        import mlflow
 
-except Exception as e:
-    MLFLOW_ENABLED = False
-    mlflow = None
-    print("MLflow disabled:", str(e))
+        MLFLOW_URI = os.getenv("MLFLOW_URI", "http://127.0.0.1:5000")
+        MLFLOW_EXPERIMENT = os.getenv(
+            "MLFLOW_EXPERIMENT",
+            "fastapi_llm_chatbot_tracking"
+        )
+
+        mlflow.set_tracking_uri(MLFLOW_URI)
+        mlflow.set_experiment(MLFLOW_EXPERIMENT)
+
+    except Exception as e:
+        mlflow = None
+        MLFLOW_ENABLED = False
+        print(f"[MLFLOW] Disabled due to error: {e}")
 
 
 # ==================================================
@@ -52,22 +59,29 @@ except Exception as e:
 
 
 # ==================================================
-# SAFE HELPERS
+# SAFE MLFLOW HELPERS
 # ==================================================
+
 def start_run_safe(run_name: str):
-    if MLFLOW_ENABLED:
-        return mlflow.start_run(run_name=run_name)
+    if MLFLOW_ENABLED and mlflow:
+        try:
+            return mlflow.start_run(run_name=run_name)
+        except Exception:
+            return nullcontext()
     return nullcontext()
 
 
 def start_span_safe(name: str):
-    if MLFLOW_ENABLED and hasattr(mlflow, "start_span"):
-        return mlflow.start_span(name)
+    if MLFLOW_ENABLED and mlflow and hasattr(mlflow, "start_span"):
+        try:
+            return mlflow.start_span(name)
+        except Exception:
+            return nullcontext()
     return nullcontext()
 
 
 def log_param_safe(key, value):
-    if MLFLOW_ENABLED:
+    if MLFLOW_ENABLED and mlflow:
         try:
             mlflow.log_param(key, value)
         except Exception:
@@ -75,13 +89,16 @@ def log_param_safe(key, value):
 
 
 def log_metric_safe(key, value):
-    if MLFLOW_ENABLED:
+    if MLFLOW_ENABLED and mlflow:
         try:
             mlflow.log_metric(key, value)
         except Exception:
             pass
 
 
+# ==================================================
+# LLM GENERATION
+# ==================================================
 def llm_generate(client, prompt):
     start = time.time()
     response = ""
@@ -97,6 +114,7 @@ def llm_generate(client, prompt):
 # ==================================================
 # ROUTES
 # ==================================================
+
 @app.get("/")
 def home():
     return {
@@ -124,6 +142,7 @@ def chat_get():
 # ==================================================
 # MAIN CHAT ENDPOINT
 # ==================================================
+
 @app.post("/chat")
 def request_chat(red: ChatRequest):
 

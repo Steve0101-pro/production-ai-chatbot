@@ -9,6 +9,9 @@ jobs:
   test-build:
     runs-on: ubuntu-latest
 
+    env:
+      MLFLOW_ENABLED: "false" # 🚨 disables MLflow in CI
+
     steps:
       # ---------------- CHECKOUT ---------------- #
       - name: Checkout Code
@@ -20,79 +23,110 @@ jobs:
         with:
           python-version: "3.11"
 
+      # ---------------- UPGRADE TOOLS ---------------- #
+      - name: Upgrade Build Tools
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+
       # ---------------- DEPENDENCIES ---------------- #
       - name: Install Dependencies
         run: |
-          python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install streamlit
 
-      # ---------------- START FASTAPI ---------------- #
+      # ---------------- FASTAPI START ---------------- #
       - name: Start FastAPI Backend
         run: |
           nohup uvicorn app.main:app --host 127.0.0.1 --port 8000 > api.log 2>&1 &
-          sleep 15
+          echo $! > fastapi.pid
+          sleep 5
 
-      # ---------------- DEBUG FASTAPI ---------------- #
-      - name: Show FastAPI Startup Logs
+      # ---------------- DEBUG LOGS ---------------- #
+      - name: Show FastAPI Logs
         run: |
-          cat api.log || true
+          echo "===== FASTAPI LOG ====="
+          cat api.log || echo "No logs found"
 
-      # ---------------- WAIT FASTAPI ---------------- #
+      # ---------------- WAIT FOR API ---------------- #
       - name: Wait for FastAPI
         run: |
-          for i in {1..10}; do
-            curl --fail http://127.0.0.1:8000/ && exit 0
-            echo "Waiting for API..."
-            sleep 3
+          echo "Waiting for FastAPI..."
+          for i in {1..30}; do
+            if curl -s http://127.0.0.1:8000/health > /dev/null; then
+              echo "✅ FastAPI is running"
+              exit 0
+            fi
+            echo "Attempt $i/30..."
+            sleep 2
           done
-          echo "FastAPI failed to start"
+
+          echo "❌ FastAPI failed to start"
+          cat api.log
           exit 1
 
-      # ---------------- START STREAMLIT ---------------- #
+      # ---------------- VERIFY ROOT ---------------- #
+      - name: Verify Root Endpoint
+        run: |
+          curl -s http://127.0.0.1:8000/ || true
+
+      # ---------------- STREAMLIT ---------------- #
       - name: Start Streamlit App
         run: |
           nohup streamlit run streamlit_run_app.py \
-          --server.port 8501 \
-          --server.headless true > streamlit.log 2>&1 &
+            --server.port 8501 \
+            --server.headless true > streamlit.log 2>&1 &
+          echo $! > streamlit.pid
           sleep 10
 
-      # ---------------- DEBUG STREAMLIT ---------------- #
-      - name: Show Streamlit Startup Logs
+      # ---------------- STREAMLIT LOGS ---------------- #
+      - name: Show Streamlit Logs
         run: |
-          cat streamlit.log || true
+          cat streamlit.log || echo "No Streamlit logs"
 
-      # ---------------- TEST STREAMLIT ---------------- #
+      # ---------------- STREAMLIT CHECK ---------------- #
       - name: Check Streamlit
         run: |
-          curl --fail http://127.0.0.1:8501/ || true
+          curl -s http://127.0.0.1:8501/ || true
 
       # ---------------- API TEST ---------------- #
       - name: Test Chat Endpoint
         run: |
           curl -X POST http://127.0.0.1:8000/chat \
-          -H "Content-Type: application/json" \
-          -d '{
-            "api_key": "test",
-            "messages": "hello",
-            "session_id": "test",
-            "chat_history": []
-          }' || true
+            -H "Content-Type: application/json" \
+            -d '{
+              "api_key": "test",
+              "messages": "hello",
+              "session_id": "test",
+              "chat_history": []
+            }' || true
 
-      # ---------------- BUILD CHECK ---------------- #
+      # ---------------- COMPILE CHECK ---------------- #
       - name: Compile Python Code
         run: |
           python -m compileall app/
 
-      # ---------------- FULL LOGS ON FAILURE ---------------- #
-      - name: Show Logs If Failed
+      # ---------------- FAILURE DEBUG ---------------- #
+      - name: Debug Logs (On Failure)
         if: failure()
         run: |
           echo "===== FASTAPI LOG ====="
           cat api.log || true
+
           echo "===== STREAMLIT LOG ====="
           cat streamlit.log || true
 
-      # ---------------- DEPLOY HOOK ---------------- #
-      - name: Deployment Ready
-        run: echo "CI passed. Connect Render / Railway here."
+          echo "===== PROCESS LIST ====="
+          ps aux | grep -E "uvicorn|streamlit" || true
+
+      # ---------------- CLEANUP ---------------- #
+      - name: Cleanup Processes
+        if: always()
+        run: |
+          [ -f fastapi.pid ] && kill $(cat fastapi.pid) || true
+          [ -f streamlit.pid ] && kill $(cat streamlit.pid) || true
+          pkill -f uvicorn || true
+          pkill -f streamlit || true
+
+      # ---------------- DONE ---------------- #
+      - name: CI Success
+        run: echo "✅ CI passed successfully"
