@@ -15,7 +15,7 @@ sys.path.append(str(ROOT_DIR))
 from app.services.memory import load_memory, save_memory, search_memory
 from app.services.embeddings import get_embed
 
-API_URL = os.getenv("API_URL", "http://127.0.0.1:8000/chat")
+API_URL = os.getenv("API_URL", "https://production-ai-chatbot.onrender.com/chat")
 
 st.set_page_config(page_title="AI Chat", layout="wide")
 st.title("AI Chat with Long-Term Memory 🚀")
