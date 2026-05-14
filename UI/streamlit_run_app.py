@@ -6,7 +6,7 @@ import json
 
 API_URL = os.getenv(
     "API_URL",
-    "https://ai-chatbot.onrender.com"
+    "https://ai-chatbot-lsav.onrender.com"
 )
 
 # ==================================================
