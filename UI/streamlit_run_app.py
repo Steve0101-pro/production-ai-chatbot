@@ -1,26 +1,42 @@
-
 import streamlit as st
 import requests
 import uuid
 import os
+import json
 
+API_URL = os.getenv(
+    "API_URL",
+    "https://ai-chatbot.onrender.com"
+)
 
-import sys
-from pathlib import Path
+# ==================================================
+# PAGE CONFIG
+# ==================================================
+st.set_page_config(
+    page_title="AI Chat",
+    layout="wide"
+)
 
-ROOT_DIR = Path(__file__).resolve().parent.parent
-sys.path.append(str(ROOT_DIR))
+# ==================================================
+# HEADER
+# ==================================================
+st.markdown(
+    """
+    <h1>
+        🤖 AI Chat + Memory
+        <a href="https://www.flaticon.com/free-icons/chatbot"
+           target="_blank"
+           style="text-decoration:none; font-size:18px;">
+           🔗
+        </a>
+    </h1>
+    """,
+    unsafe_allow_html=True
+)
 
-# Import memory functions
-from app.services.memory import load_memory, save_memory, search_memory
-from app.services.embeddings import get_embed
-
-API_URL = os.getenv("API_URL", "https://production-ai-chatbot.onrender.com/chat")
-
-st.set_page_config(page_title="AI Chat", layout="wide")
-st.title("AI Chat with Long-Term Memory 🚀")
-
-# ---------------- SESSION ---------------- #
+# ==================================================
+# SESSION STATE
+# ==================================================
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 
@@ -30,93 +46,250 @@ if "messages" not in st.session_state:
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-# Load memory DB
-db = load_memory()
+if "db" not in st.session_state:
+    st.session_state.db = []
 
-# ---------------- SIDEBAR ---------------- #
-st.sidebar.title("🧵 Conversations")
-
-search_query = st.sidebar.text_input("🔍 Search")
+# ==================================================
+# SIDEBAR AUTH
+# ==================================================
+st.sidebar.title("🔐 Authentication")
 
 user_api_key = st.sidebar.text_input(
-    "Enter NVIDIA API Key",
+    "Enter API Key to continue",
     type="password"
 )
 
+# ==================================================
+# BLOCK APP UNTIL AUTH
+# ==================================================
 if not user_api_key:
-    st.sidebar.warning("Please enter your NVIDIA API key.")
+    st.sidebar.warning(
+        "🔐 Please enter your API key."
+    )
     st.stop()
-embed=get_embed(user_api_key)
-# 🔍 Search memory
-if search_query:
-    results = search_memory(search_query,embed)
-    st.sidebar.write("### 🔎 Results")
-    for r in results:
-        st.sidebar.write("-",r[:100])
-    
 
-# 📂 Show conversations
-for convo in sorted(db, key=lambda x: x.get("updated_at", ""), reverse=True):
+st.sidebar.success("✅ Authenticated")
+
+# ==================================================
+# MEMORY SEARCH
+# ==================================================
+st.sidebar.title("🧠 Search Past Conversation")
+
+search_query = st.sidebar.text_input(
+    "Search past conversations"
+)
+
+if search_query:
+
+    try:
+
+        res = requests.post(
+            f"{API_URL}/search_memory",
+            json={
+                "api_key": user_api_key,
+                "messages": search_query,
+                "chat_history": [],
+                "session_id": st.session_state.session_id
+            }
+        )
+
+        data = res.json()
+
+        st.sidebar.write("### Results")
+
+        for r in data.get("results", []):
+            st.sidebar.write("•", r)
+
+    except Exception as e:
+
+        st.sidebar.error(f"Search error: {e}")
+
+# ==================================================
+# CONVERSATIONS
+# ==================================================
+st.sidebar.title("🧵 Conversations")
+
+for convo in sorted(
+    st.session_state.db,
+    key=lambda x: x.get("updated_at", ""),
+    reverse=True
+):
+
     col1, col2 = st.sidebar.columns([4, 1])
 
-    if col1.button(convo.get("title", "Untitled"), key=convo["session_id"]):
+    # LOAD CHAT
+    if col1.button(
+        convo.get("title", "Untitled"),
+        key=convo["session_id"]
+    ):
+
         st.session_state.session_id = convo["session_id"]
+
         st.session_state.messages = convo["messages"]
+
+        st.session_state.chat_history = convo["messages"]
+
         st.rerun()
 
-    if col2.button("🗑️", key=f"del_{convo['session_id']}"):
-        db.remove(convo)
-        save_memory(db)
+    # DELETE CHAT
+    if col2.button(
+        "🗑️",
+        key=f"del_{convo['session_id']}"
+    ):
+
+        st.session_state.db = [
+            c for c in st.session_state.db
+            if c["session_id"] != convo["session_id"]
+        ]
+
         st.rerun()
 
-# ➕ New chat
+# ==================================================
+# NEW CHAT
+# ==================================================
 if st.sidebar.button("➕ New Chat"):
+
     st.session_state.session_id = str(uuid.uuid4())
+
     st.session_state.messages = []
+
     st.session_state.chat_history = []
+
     st.rerun()
 
-# ---------------- DISPLAY CHAT ---------------- #
+# ==================================================
+# DISPLAY CHAT
+# ==================================================
 st.subheader("Conversation")
 
 for msg in st.session_state.messages:
+
     with st.chat_message(msg["role"]):
+
         st.markdown(msg["content"])
 
-# ---------------- USER INPUT ---------------- #
+# ==================================================
+# USER INPUT
+# ==================================================
 user_input = st.chat_input("Ask anything...")
 
 if user_input:
-    # Show user message
-    st.session_state.messages.append({"role": "user", "content": user_input})
-    with st.chat_message("user"):
-        st.markdown(user_input)
 
+    # ---------------- USER MESSAGE ---------------- #
+    st.session_state.messages.append({
+        "role": "user",
+        "content": user_input
+    })
+
+    st.chat_message("user").markdown(user_input)
+
+    # ---------------- PAYLOAD ---------------- #
     payload = {
-        "api_key": user_api_key,  # ✅ FIXED
+        "api_key": user_api_key,
         "messages": user_input,
         "chat_history": st.session_state.chat_history,
         "session_id": st.session_state.session_id
     }
 
-    # Call backend
-    with st.chat_message("assistant"):
-        placeholder = st.empty()
-        full_response = ""
+    # ---------------- ASSISTANT UI ---------------- #
+    placeholder = st.chat_message("assistant").empty()
 
-        try:
-            res = requests.post(API_URL, json=payload)
-            res.raise_for_status()
-            data = res.json()
-            full_response = data.get("response", "No response")
+    full_response = ""
 
-            # Update chat history
-            st.session_state.chat_history.append({"role": "user", "content": user_input})
-            st.session_state.chat_history.append({"role": "assistant", "content": full_response})
+    # ==================================================
+    # STREAMING RESPONSE
+    # ==================================================
+    try:
 
-        except requests.exceptions.RequestException as e:
-            full_response = f"⚠️ Error: {e}"
+        with st.spinner("Thinking... 🤖"):
+
+            response = requests.post(
+                f"{API_URL}/chat",
+                json=payload,
+                stream=True
+            )
+
+            response.raise_for_status()
+
+            for line in response.iter_lines():
+
+                if line:
+
+                    decoded = (
+                        line.decode("utf-8")
+                        .replace("data: ", "")
+                    )
+
+                    data = json.loads(decoded)
+
+                    # ---------------- TOKEN ---------------- #
+                    if "token" in data:
+
+                        token = data["token"]
+
+                        full_response += token
+
+                        placeholder.markdown(
+                            full_response + "▌"
+                        )
+
+                    # ---------------- FINISHED ---------------- #
+                    if data.get("done"):
+
+                        placeholder.markdown(
+                            full_response
+                        )
+
+                        break
+
+    except Exception as e:
+
+        full_response = f"⚠️ Error: {e}"
 
         placeholder.markdown(full_response)
 
-    st.session_state.messages.append({"role": "assistant", "content": full_response})
+    # ==================================================
+    # SAVE CHAT
+    # ==================================================
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": full_response
+    })
+
+    st.session_state.chat_history.append({
+        "role": "user",
+        "content": user_input
+    })
+
+    st.session_state.chat_history.append({
+        "role": "assistant",
+        "content": full_response
+    })
+
+    # ==================================================
+    # SAVE CONVERSATION
+    # ==================================================
+    existing = next(
+        (
+            c for c in st.session_state.db
+            if c["session_id"] == st.session_state.session_id
+        ),
+        None
+    )
+
+    if existing:
+
+        existing["messages"] = (
+            st.session_state.messages.copy()
+        )
+
+        existing["updated_at"] = str(uuid.uuid4())
+
+    else:
+
+        st.session_state.db.append({
+            "session_id": st.session_state.session_id,
+            "title": user_input[:30],
+            "messages": st.session_state.messages.copy(),
+            "updated_at": str(uuid.uuid4())
+        })

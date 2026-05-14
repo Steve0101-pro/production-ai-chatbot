@@ -1,10 +1,11 @@
 import os
 import time
 import uuid
+import json
 from contextlib import nullcontext
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.models import ChatRequest
 from app.services.auth import api_validation
@@ -16,11 +17,10 @@ from app.utils.logger import logger
 
 
 # ==================================================
-# SAFE OPTIONAL MLFLOW IMPORT (PRODUCTION SAFE)
+# SAFE OPTIONAL MLFLOW IMPORT (UNCHANGED)
 # ==================================================
 
 MLFLOW_ENABLED = os.getenv("MLFLOW_ENABLED", "false").lower() == "true"
-
 mlflow = None
 
 if MLFLOW_ENABLED:
@@ -49,7 +49,7 @@ app = FastAPI(title="AI Backend API", version="1.0.0")
 
 
 # ==================================================
-# SAFE MEMORY LOAD
+# MEMORY LOAD
 # ==================================================
 try:
     memory = load_memory()
@@ -59,7 +59,7 @@ except Exception as e:
 
 
 # ==================================================
-# SAFE MLFLOW HELPERS
+# SAFE MLFLOW HELPERS (UNCHANGED)
 # ==================================================
 
 def start_run_safe(run_name: str):
@@ -140,7 +140,7 @@ def chat_get():
 
 
 # ==================================================
-# MAIN CHAT ENDPOINT
+# 🔥 MAIN CHAT ENDPOINT WITH STREAMING
 # ==================================================
 
 @app.post("/chat")
@@ -164,21 +164,22 @@ def request_chat(red: ChatRequest):
             # ---------------- AUTH ---------------- #
             llm_ok, embed_ok = api_validation(api_key)
 
-            log_param_safe("llm_ok", llm_ok)
-            log_param_safe("embed_ok", embed_ok)
-
             if not llm_ok or not embed_ok:
                 log_param_safe("status", "invalid_api_key")
-                raise HTTPException(status_code=401, detail="Invalid API Key")
+                raise HTTPException(
+                    status_code=401,
+                    detail="Invalid API Key"
+                )
 
             # ---------------- CLIENTS ---------------- #
             client = get_llm_client(api_key)
             embed = get_embedding_client(api_key)
 
             # ---------------- HISTORY ---------------- #
-            chat_history.append(
-                {"role": "user", "content": user_input}
-            )
+            chat_history.append({
+                "role": "user",
+                "content": user_input
+            })
 
             format_history = multi_chat(chat_history)
 
@@ -186,6 +187,7 @@ def request_chat(red: ChatRequest):
             memory_context = ""
 
             with start_span_safe("memory_retrieval"):
+
                 if embed_ok:
                     try:
                         memory_context = "\n".join(
@@ -214,47 +216,83 @@ Be accurate, concise, and do not hallucinate.
 </Instruction>
 """
 
-            # ---------------- GENERATION ---------------- #
-            with start_span_safe("llm_generation"):
-                response, llm_time = llm_generate(client, prompt)
+            # ==================================================
+            # 🔥 STREAMING GENERATOR
+            # ==================================================
+            def generate():
 
-            # ---------------- SAVE CHAT ---------------- #
-            chat_history.append(
-                {"role": "assistant", "content": response}
+                start_llm = time.time()
+
+                full_response = ""
+
+                with start_span_safe("llm_generation"):
+
+                    for chunk in client.stream(prompt):
+
+                        if getattr(chunk, "content", None):
+
+                            token = chunk.content
+
+                            full_response += token
+
+                            yield (
+                                f"data: {json.dumps({'token': token})}\n\n"
+                            )
+
+                # ---------------- SAVE CHAT ---------------- #
+                chat_history.append({
+                    "role": "assistant",
+                    "content": full_response
+                })
+
+                # ---------------- SAVE MEMORY ---------------- #
+                if embed_ok:
+                    try:
+                        save_current_session(
+                            memory,
+                            session_id,
+                            chat_history,
+                            embed
+                        )
+                    except Exception as e:
+                        logger.info(
+                            f"Session save failed: {str(e)}"
+                        )
+
+                # ---------------- METRICS ---------------- #
+                latency = time.time() - start_time
+                llm_time = time.time() - start_llm
+
+                log_metric_safe("latency_sec", latency)
+                log_metric_safe("llm_time_sec", llm_time)
+                log_metric_safe("count_token", len(prompt))
+                log_metric_safe(
+                    "response_chars",
+                    len(full_response)
+                )
+                log_metric_safe(
+                    "history_messages",
+                    len(chat_history)
+                )
+
+                log_param_safe("status", "success")
+                log_param_safe("model_type", "external_llm")
+
+                # ---------------- DONE SIGNAL ---------------- #
+                yield (
+                    f"data: {json.dumps({'done': True})}\n\n"
+                )
+
+            return StreamingResponse(
+                generate(),
+                media_type="text/event-stream"
             )
-
-            if embed_ok:
-                try:
-                    save_current_session(
-                        memory,
-                        session_id,
-                        chat_history,
-                        embed
-                    )
-                except Exception as e:
-                    logger.info(f"Session save failed: {str(e)}")
-
-            # ---------------- METRICS ---------------- #
-            latency = time.time() - start_time
-
-            log_metric_safe("latency_sec", latency)
-            log_metric_safe("llm_time_sec", llm_time)
-            log_metric_safe("count_token", len(prompt))
-            log_metric_safe("response_chars", len(response))
-            log_metric_safe("history_messages", len(chat_history))
-
-            log_param_safe("status", "success")
-            log_param_safe("model_type", "external_llm")
-
-            return {
-                "response": response,
-                "session_id": session_id
-            }
 
     except HTTPException:
         raise
 
     except Exception as e:
+
         logger.info(f"Error in /chat endpoint: {str(e)}")
 
         log_param_safe("status", "error")
@@ -263,4 +301,42 @@ Be accurate, concise, and do not hallucinate.
         raise HTTPException(
             status_code=500,
             detail="Internal Server Error"
+        )
+
+
+# ==================================================
+# 🔥 SEARCH MEMORY ENDPOINT
+# ==================================================
+
+@app.post("/search_memory")
+def search_memory_api(red: ChatRequest):
+
+    llm_ok, embed_ok = api_validation(red.api_key)
+
+    if not embed_ok:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid API Key"
+        )
+
+    try:
+        embed = get_embedding_client(red.api_key)
+
+        results = search_memory(
+            red.messages,
+            embed
+        )
+
+        return {
+            "query": red.messages,
+            "results": results
+        }
+
+    except Exception as e:
+
+        logger.info(f"Search memory error: {str(e)}")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Search failed"
         )
